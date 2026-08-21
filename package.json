@@ -1,0 +1,52 @@
+{
+  "name": "dsh-sound2text",
+  "version": "0.1.0",
+  "description": "Live system-audio captions for DeepSeek Harness: WASAPI loopback capture + cloud ASR, floating side panel with ask-DeepSeek-on-selection",
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/host/index.js",
+  "exports": {
+    ".": "./lib/host/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "files": [
+    "lib",
+    "helper",
+    "scripts",
+    "cordis.patch.fragment.yml",
+    "install.bat",
+    "start.bat",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.1-rc.1 <5",
+    "@deepseek-ai/dsh-host-webserver": ">=0.0.1-rc.1 <0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.1",
+    "esbuild": "^0.25.5",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.6.3"
+  }
+}

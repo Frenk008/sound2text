@@ -1,0 +1,6 @@
+# Append this block to your profile's cordis.patch.yml
+# (usually %USERPROFILE%\.dsh\profiles\web\cordis.patch.yml)
+# to compose dsh-sound2text into the Web surface.
+- insert:
+    - id: sound2text
+      name: dsh-sound2text
