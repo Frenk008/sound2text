@@ -233,6 +233,56 @@ def pick_loopback(device_name: str | None):
         )
 
 
+def pyaudiowpatch_source(device_name: str | None):
+    """Capture via pyaudiowpatch (dedicated WASAPI loopback support; handles
+    HDMI/DP devices whose MediaFoundation loopback misbehaves). Yields
+    (mono float32 block, exact device rate)."""
+    import pyaudiowpatch as pyaudio
+
+    with pyaudio.PyAudio() as p:
+        loopbacks = list(p.get_loopback_device_info_generator())
+        target = None
+        if device_name:
+            for lb in loopbacks:
+                if device_name.lower() in lb["name"].lower():
+                    target = lb
+                    break
+        else:
+            default_out = p.get_default_output_device_info()
+            for lb in loopbacks:
+                if default_out["name"] in lb["name"]:
+                    target = lb
+                    break
+            target = target or (loopbacks[0] if loopbacks else None)
+        if target is None:
+            raise RuntimeError("pyaudiowpatch found no loopback device")
+        rate = int(target["defaultSampleRate"])
+        channels = int(target["maxInputChannels"]) or 2
+        log(f"pyaudiowpatch loopback: {target['name']} @ {rate}Hz x{channels}ch")
+        with p.open(
+            format=pyaudio.paFloat32,
+            channels=channels,
+            rate=rate,
+            input=True,
+            frames_per_buffer=1024,
+            input_device_index=int(target["index"]),
+        ) as stream:
+            while True:
+                data = stream.read(1024, exception_on_overflow=False)
+                block = np.frombuffer(data, dtype=np.float32).reshape(-1, channels)
+                yield block.mean(axis=1).astype(np.float32), rate
+
+
+def soundcard_source(device_name: str | None):
+    """Fallback capture via soundcard (MediaFoundation loopback). Device rate
+    is unknown up front — yield None and let the caller measure it."""
+    mic = pick_loopback(device_name)
+    with mic.recorder(samplerate=48000) as rec:
+        while True:
+            data = rec.record(numframes=1024)  # (n, channels) float32
+            yield data.mean(axis=1).astype(np.float32), None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="dsh-sound2text capture helper")
     parser.add_argument("--port", type=int, default=3080)
@@ -255,7 +305,6 @@ def main() -> None:
     model_path = ensure_model(Path(args.model_dir))
     vad = Vad(model_path)
     seg = Segmenter()
-    mic = pick_loopback(args.device or None)
     url = f"http://127.0.0.1:{args.port}/api/sound2text/segment"
 
     debug_dir = Path(__file__).parent / "debug"
@@ -265,67 +314,89 @@ def main() -> None:
 
     from scipy.signal import resample_poly
 
-    log("opening loopback stream (48 kHz assumption, auto-measuring device rate)…")
-    with mic.recorder(samplerate=48000) as rec:
-        native_buf: list[np.ndarray] = []
-        frames_seen = 0
-        t0 = time.monotonic()
-        measured_rate = 48000.0
-        ratio = Fraction(1, 3)  # 48000 -> 16000
-        rate_confirmed = False
-        seg_count = 0
+    # Prefer pyaudiowpatch (proper WASAPI loopback); fall back to soundcard.
+    source = None
+    try:
+        import pyaudiowpatch  # noqa: F401
 
-        while True:
-            data = rec.record(numframes=1024)  # (n, channels) float32
-            mono = data.mean(axis=1).astype(np.float32)
-            native_buf.append(mono)
-            frames_seen += len(mono)
+        gen = pyaudiowpatch_source(args.device or None)
+        first = next(gen)  # force device open now so failures can fall back
+        import itertools
 
-            # one-shot rate calibration after ~1.5 s of capture
-            if not rate_confirmed:
-                elapsed = time.monotonic() - t0
-                if elapsed > 1.5 and frames_seen > 1000:
-                    est = frames_seen / elapsed
-                    if abs(est - measured_rate) / measured_rate > 0.02:
-                        measured_rate = est
-                        g = math.gcd(int(round(est)), TARGET_RATE)
-                        ratio = Fraction(TARGET_RATE // g, int(round(est)) // g)
-                        log(f"measured device rate {est:.0f} Hz -> resample ratio {ratio}")
-                    else:
-                        log(f"measured device rate {est:.0f} Hz (matches 48k assumption)")
-                    rate_confirmed = True
-                    native_buf = []  # restart framing against the confirmed rate
-                    continue
+        source = itertools.chain([first], gen)
+    except ImportError:
+        log("pyaudiowpatch 未安装，使用 soundcard 后端（建议 pip install pyaudiowpatch）")
+    except Exception as e:  # noqa: BLE001
+        log(f"pyaudiowpatch 启动失败（{e}），改用 soundcard 后端")
+    if source is None:
+        source = soundcard_source(args.device or None)
 
-            frame_native = int(round(measured_rate * FRAME_SEC))
-            buf = np.concatenate(native_buf)
-            n_frames = len(buf) // frame_native if frame_native else 0
-            if n_frames == 0:
+    native_buf: list[np.ndarray] = []
+    frames_seen = 0
+    t0 = time.monotonic()
+    measured_rate = 48000.0
+    ratio = Fraction(1, 3)  # 48000 -> 16000
+    rate_confirmed = False
+    seg_count = 0
+
+    for mono, dev_rate in source:
+        native_buf.append(mono)
+        frames_seen += len(mono)
+
+        if dev_rate is not None and not rate_confirmed:
+            measured_rate = float(dev_rate)
+            g = math.gcd(int(dev_rate), TARGET_RATE)
+            ratio = Fraction(TARGET_RATE // g, int(dev_rate) // g)
+            rate_confirmed = True
+            log(f"device rate {dev_rate} Hz -> resample ratio {ratio}")
+            native_buf = []
+            continue
+
+        # soundcard fallback: one-shot rate calibration after ~1.5 s
+        if not rate_confirmed:
+            elapsed = time.monotonic() - t0
+            if elapsed > 1.5 and frames_seen > 1000:
+                est = frames_seen / elapsed
+                if abs(est - measured_rate) / measured_rate > 0.02:
+                    measured_rate = est
+                    g = math.gcd(int(round(est)), TARGET_RATE)
+                    ratio = Fraction(TARGET_RATE // g, int(round(est)) // g)
+                    log(f"measured device rate {est:.0f} Hz -> resample ratio {ratio}")
+                else:
+                    log(f"measured device rate {est:.0f} Hz (matches 48k assumption)")
+                rate_confirmed = True
+                native_buf = []  # restart framing against the confirmed rate
                 continue
-            usable = n_frames * frame_native
-            native_buf = [buf[usable:]]
 
-            mono16 = resample_poly(buf[:usable], ratio.numerator, ratio.denominator).astype(np.float32)
+        frame_native = int(round(measured_rate * FRAME_SEC))
+        buf = np.concatenate(native_buf)
+        n_frames = len(buf) // frame_native if frame_native else 0
+        if n_frames == 0:
+            continue
+        usable = n_frames * frame_native
+        native_buf = [buf[usable:]]
 
-            now_ms = time.time() * 1000
-            for i in range(0, len(mono16) - 511, 512):
-                frame = mono16[i : i + 512]
-                out = seg.feed(frame, vad.prob(frame), now_ms)
-                if out is not None:
-                    audio, start_ms, gain = out
-                    seg_count += 1
-                    wav = wav_bytes(audio)
-                    rms = float(np.sqrt(np.mean(np.square(audio))))
-                    log(
-                        f"segment #{seg_count}: {len(audio) / TARGET_RATE:.1f}s "
-                        f"rms={rms:.4f}{' (x%.0f gain)' % gain if gain > 1.01 else ''}"
-                    )
-                    if keep_wav:
-                        (debug_dir / f"seg_{int(time.time())}_{seg_count}.wav").write_bytes(wav)
-                    if args.dry_run:
-                        continue
-                    if not post_segment(url, args.token, start_ms, now_ms, wav):
-                        log("segment dropped after retries")
+        mono16 = resample_poly(buf[:usable], ratio.numerator, ratio.denominator).astype(np.float32)
+
+        now_ms = time.time() * 1000
+        for i in range(0, len(mono16) - 511, 512):
+            frame = mono16[i : i + 512]
+            out = seg.feed(frame, vad.prob(frame), now_ms)
+            if out is not None:
+                audio, start_ms, gain = out
+                seg_count += 1
+                wav = wav_bytes(audio)
+                rms = float(np.sqrt(np.mean(np.square(audio))))
+                log(
+                    f"segment #{seg_count}: {len(audio) / TARGET_RATE:.1f}s "
+                    f"rms={rms:.4f}{' (x%.0f gain)' % gain if gain > 1.01 else ''}"
+                )
+                if keep_wav:
+                    (debug_dir / f"seg_{int(time.time())}_{seg_count}.wav").write_bytes(wav)
+                if args.dry_run:
+                    continue
+                if not post_segment(url, args.token, start_ms, now_ms, wav):
+                    log("segment dropped after retries")
 
 
 if __name__ == "__main__":
