@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-HELPER_VERSION = "2026-08-23d"
+HELPER_VERSION = "2026-08-23e"
 
 TARGET_RATE = 16000
 FRAME_SEC = 0.032                     # 32 ms VAD frame
@@ -196,6 +196,15 @@ def wav_bytes(pcm16: np.ndarray) -> bytes:
     return bio.getvalue()
 
 
+def safe_write_wav(path: Path, audio: np.ndarray) -> None:
+    """Debug dump that must never kill the capture pipeline — e.g. a player
+    still holding the previous file open denies writes on Windows."""
+    try:
+        path.write_bytes(wav_bytes(audio))
+    except OSError as e:
+        log(f"debug wav write skipped ({e})")
+
+
 def post_segment(url: str, token: str, start_ms: float, end_ms: float, wav: bytes) -> bool:
     body = json.dumps(
         {"startTs": round(start_ms), "endTs": round(end_ms), "wavB64": base64.b64encode(wav).decode("ascii")}
@@ -354,7 +363,7 @@ def main() -> None:
     test_peak = float(np.max(np.abs(test_audio))) if test_audio.size else 0.0
     if keep_wav:
         scaled = np.clip(test_audio * (0.5 / test_peak), -1, 1) if 1e-4 < test_peak < 0.25 else test_audio
-        (debug_dir / "selftest.wav").write_bytes(wav_bytes(scaled))
+        safe_write_wav(debug_dir / f"selftest_{int(time.time())}.wav", scaled)
     if test_rms > 0.002:
         log(f"✓ 自检通过：捕获到信号 rms={test_rms:.4f} peak={test_peak:.4f}")
     else:
@@ -431,7 +440,7 @@ def main() -> None:
                     f"rms={rms:.4f}{' (x%.0f gain)' % gain if gain > 1.01 else ''}"
                 )
                 if keep_wav:
-                    (debug_dir / f"seg_{int(time.time())}_{seg_count}.wav").write_bytes(wav)
+                    safe_write_wav(debug_dir / f"seg_{int(time.time())}_{seg_count}.wav", audio)
                 if args.dry_run:
                     continue
                 if not post_segment(url, args.token, start_ms, now_ms, wav):
