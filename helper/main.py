@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-HELPER_VERSION = "2026-08-23e"
+HELPER_VERSION = "2026-08-23f"
 
 TARGET_RATE = 16000
 FRAME_SEC = 0.032                     # 32 ms VAD frame
@@ -38,7 +38,7 @@ FRAME_SEC = 0.032                     # 32 ms VAD frame
 START_PROB = 0.60                     # probability to enter speech
 END_PROB = 0.45                       # probability to stay in speech
 SILENCE_EXIT_SEC = 0.7                # trailing silence that closes a segment
-MAX_SEGMENT_SEC = 10.0                # force-cut long continuous speech
+MAX_SEGMENT_SEC = 3.0                 # force-cut long continuous speech
 MIN_SEGMENT_SEC = 0.35                # discard blips
 MODEL_URLS = [
     "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx",
@@ -186,13 +186,17 @@ class Segmenter:
         return np.clip(audio, -1.0, 1.0), start, gain
 
 
-def wav_bytes(pcm16: np.ndarray) -> bytes:
+def wav_bytes(pcm: np.ndarray) -> bytes:
+    # segments arrive as float32 in [-1,1]; astype(int16) truncates them to
+    # all-zero silence, so scale floats to the int16 range first
+    if np.issubdtype(pcm.dtype, np.floating):
+        pcm = (np.clip(pcm, -1.0, 1.0) * 32767.0).astype(np.int16)
     bio = io.BytesIO()
     with wave.open(bio, "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(TARGET_RATE)
-        w.writeframes(pcm16.astype(np.int16).tobytes())
+        w.writeframes(pcm.tobytes())
     return bio.getvalue()
 
 
