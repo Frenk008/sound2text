@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-HELPER_VERSION = "2026-08-23c"
+HELPER_VERSION = "2026-08-23d"
 
 TARGET_RATE = 16000
 FRAME_SEC = 0.032                     # 32 ms VAD frame
@@ -272,7 +272,9 @@ def pyaudiowpatch_source(device_name: str | None):
             while True:
                 data = stream.read(1024, exception_on_overflow=False)
                 block = np.frombuffer(data, dtype=np.float32).reshape(-1, channels)
-                yield block.mean(axis=1).astype(np.float32), rate
+                # Take the LEFT channel: averaging stereo can cancel speech
+                # outright when the two channels are (near) anti-phase.
+                yield block[:, 0].copy().astype(np.float32), rate
 
 
 def soundcard_source(device_name: str | None):
@@ -282,7 +284,7 @@ def soundcard_source(device_name: str | None):
     with mic.recorder(samplerate=48000) as rec:
         while True:
             data = rec.record(numframes=1024)  # (n, channels) float32
-            yield data.mean(axis=1).astype(np.float32), None
+            yield (data[:, 0] if data.ndim > 1 else data).astype(np.float32), None
 
 
 def main() -> None:
