@@ -35,7 +35,6 @@ FRAME_SEC = 0.032                     # 32 ms VAD frame
 # VAD state machine tuning
 START_PROB = 0.60                     # probability to enter speech
 END_PROB = 0.45                       # probability to stay in speech
-MIN_START_RMS = 0.012                 # energy gate: faint device noise floor must not look like speech
 SILENCE_EXIT_SEC = 0.7                # trailing silence that closes a segment
 MAX_SEGMENT_SEC = 10.0                # force-cut long continuous speech
 MIN_SEGMENT_SEC = 0.35                # discard blips
@@ -115,6 +114,9 @@ class Segmenter:
 
     def __init__(self) -> None:
         self.clear()
+        # Rolling out-of-speech frame RMS history -> adaptive noise floor.
+        # Survives clear() on purpose: one estimate for the whole session.
+        self._noise: list[float] = []
 
     def clear(self) -> None:
         self.buf: list[np.ndarray] = []   # short pre-roll ring, always fed
@@ -124,14 +126,29 @@ class Segmenter:
         self.seg: list[np.ndarray] = []
         self.seg_start: float | None = None
 
-    def feed(self, frame: np.ndarray, p: float, now_ms: float) -> tuple[np.ndarray, float] | None:
+    def _track_noise(self, frame_rms: float) -> None:
+        """Out-of-speech frames feed the rolling noise-floor estimate."""
+        self._noise.append(frame_rms)
+        if len(self._noise) > 150:
+            del self._noise[:75]
+
+    def _noise_gate(self) -> float:
+        """Speech entry needs RMS clearly above the session noise floor, so a
+        quiet-but-real voice passes while an unused device's idle noise
+        (constant RMS) never looks like speech."""
+        floor = sorted(self._noise)[len(self._noise) // 2] if self._noise else 0.0
+        return max(3.0 * floor, 0.004)
+
+    def feed(self, frame: np.ndarray, p: float, now_ms: float) -> tuple[np.ndarray, float, float] | None:
         self.buf.append(frame)
         if len(self.buf) > 3:
             del self.buf[: -3]
 
         if not self.in_speech:
             frame_rms = float(np.sqrt(np.mean(np.square(frame))))
-            if p >= START_PROB and frame_rms >= MIN_START_RMS:
+            warmed_up = len(self._noise) >= 30  # ~1 s of floor data before arming
+            self._track_noise(frame_rms)
+            if warmed_up and p >= START_PROB and frame_rms >= self._noise_gate():
                 self.in_speech = True
                 self.speech_run = 0.0
                 self.silence_run = 0.0
@@ -156,7 +173,15 @@ class Segmenter:
         audio = np.concatenate(seg)
         if len(audio) < int(MIN_SEGMENT_SEC * TARGET_RATE):
             return None
-        return np.clip(audio, -1.0, 1.0), start
+        # Loopback captures the POST-volume-mix signal: when Windows volume is
+        # low (user compensates with monitor hardware volume) real speech
+        # arrives far too quiet for the ASR — peak-normalize quiet segments.
+        peak = float(np.max(np.abs(audio)))
+        gain = 1.0
+        if 1e-4 < peak < 0.25:
+            gain = 0.5 / peak
+            audio = audio * gain
+        return np.clip(audio, -1.0, 1.0), start, gain
 
 
 def wav_bytes(pcm16: np.ndarray) -> bytes:
@@ -287,11 +312,14 @@ def main() -> None:
                 frame = mono16[i : i + 512]
                 out = seg.feed(frame, vad.prob(frame), now_ms)
                 if out is not None:
-                    audio, start_ms = out
+                    audio, start_ms, gain = out
                     seg_count += 1
                     wav = wav_bytes(audio)
                     rms = float(np.sqrt(np.mean(np.square(audio))))
-                    log(f"segment #{seg_count}: {len(audio) / TARGET_RATE:.1f}s rms={rms:.4f}")
+                    log(
+                        f"segment #{seg_count}: {len(audio) / TARGET_RATE:.1f}s "
+                        f"rms={rms:.4f}{' (x%.0f gain)' % gain if gain > 1.01 else ''}"
+                    )
                     if keep_wav:
                         (debug_dir / f"seg_{int(time.time())}_{seg_count}.wav").write_bytes(wav)
                     if args.dry_run:

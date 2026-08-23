@@ -62,6 +62,7 @@ install.bat
 ## 常见问题
 
 - **点开始后立即停止 / 提示无法访问音频设备**：dsh 运行在没有音频会话的环境（SSH/服务/某些终端）。在与扬声器同一登录会话的普通终端启动 `dsh web`。
+- **能听到声音但识别一直为空（日志 rms≈0.008 且段总被切到 10s）**：Windows 音量开得低、靠显示器/音箱物理音量放大听声。loopback 捕获的是**系统音量之后**的信号，会轻 10 倍以上。插件已内置安静段自动增益，但最好把系统音量拉到 30% 以上、调低显示器音量补偿，信噪比最佳。
 - **采不到某个播放源**：采集的是「默认输出设备」的回声。`python helper/main.py --list-devices` 查看设备，用 `--device "设备名"` 指定（写进 host spawn 参数需改 host/index.ts）。
 - **想用麦克风而不是系统声音**：helper 里 `include_loopback=True` 改为 False 并选麦克风设备。
 - **识别服务换成别家**：任何 OpenAI 兼容 `/audio/transcriptions` 都可以，改 `S2T_BASE_URL` / `S2T_MODEL` / `S2T_API_KEY` 即可。
