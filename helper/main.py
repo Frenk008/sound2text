@@ -447,11 +447,10 @@ def main() -> None:
             wsid = os.environ.get("S2T_STREAM_WORKSPACE_ID", "")
             if wsid:
                 ws_url = f"wss://{wsid}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
-        if not api_key or not ws_url:
-            raise SystemExit(
-                "流式模式缺少配置：需要 S2T_STREAM_API_KEY，以及 S2T_STREAM_URL 或\n"
-                "S2T_STREAM_WORKSPACE_ID（阿里云百炼控制台获取，详见 README）"
-            )
+            else:
+                ws_url = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+        if not api_key:
+            raise SystemExit("流式模式缺少配置：需要 S2T_STREAM_API_KEY（阿里云百炼控制台获取，详见 README）")
         model_id = os.environ.get("S2T_STREAM_MODEL", "paraformer-realtime-v2")
         language = os.environ.get("S2T_STREAM_LANGUAGE", "")
         ps = ParaformerStream(ws_url, api_key, model=model_id, language=language, log=log)

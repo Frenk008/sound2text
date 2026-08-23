@@ -44,9 +44,9 @@ install.bat
 | `S2T_DEVICE` | 系统默认输出设备 | 采集哪个输出设备（必须是**声音实际播放的设备**）。`python helper/main.py --list-devices` 查看名称 |
 | `S2T_ARCHIVE_DIR` | `~/.dsh/sound2text/transcripts` | 字幕按天归档目录 |
 | `S2T_ASR_MODE` | `batch` | `batch`（整段式，默认）或 `stream`（流式，见下节） |
-| `S2T_STREAM_API_KEY` | 无 | 流式模式的阿里云百炼（DashScope）API Key |
-| `S2T_STREAM_WORKSPACE_ID` | 无 | 百炼业务空间 ID，用于拼接 cn-beijing 推理地址 |
-| `S2T_STREAM_URL` | 由 workspace 拼接 | 完整 WebSocket 推理地址（设置后覆盖 workspace） |
+| `S2T_STREAM_API_KEY` | 无（流式必填） | 阿里云百炼（DashScope）API Key |
+| `S2T_STREAM_WORKSPACE_ID` | 空 | 百炼业务空间 ID；设置后改走空间专属 cn-beijing 地址（一般无需设置） |
+| `S2T_STREAM_URL` | `wss://dashscope.aliyuncs.com/api-ws/v1/inference` | 完整 WebSocket 推理地址（优先级最高） |
 | `S2T_STREAM_MODEL` | `paraformer-realtime-v2` | 流式模型 id |
 | `S2T_STREAM_LANGUAGE` | 空（自动检测） | 流式语言提示（`zh`/`en`/…） |
 
@@ -60,13 +60,14 @@ SenseVoiceSmall），但字幕是一句一批。想要接近会议字幕的**逐
 识别中句子在面板上原地刷新，说完即定稿。
 
 ```bat
-:: 1. 百炼控制台 https://bailian.console.aliyun.com 开通并创建 API Key
-:: 2. 控制台查看业务空间 ID（Workspace ID）
+:: 百炼控制台 https://bailian.console.aliyun.com 开通并创建 API Key
 setx S2T_ASR_MODE stream
 setx S2T_STREAM_API_KEY sk-你的百炼key
-setx S2T_STREAM_WORKSPACE_ID llm-xxxxxxxx
 :: 新开终端后 dsh web；不想用流式时 setx S2T_ASR_MODE batch 切回（免费）
 ```
+
+默认走 DashScope 全局端点（`wss://dashscope.aliyuncs.com/api-ws/v1/inference`），只需 API Key。
+如需业务空间专属地址（如账号要求空间隔离），再设 `S2T_STREAM_WORKSPACE_ID` 或 `S2T_STREAM_URL`。
 
 - **计费**：按实际推送的音频时长计费（约 0.288 元/小时）。本地 VAD 做门控：静音不推流
   不计费；连续静音 15 秒自动结束识别任务，下次开口自动重开。

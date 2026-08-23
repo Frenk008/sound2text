@@ -80,7 +80,7 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
   const streamUrl = () =>
     cfg.streamUrl ??
     process.env.S2T_STREAM_URL ??
-    (streamWorkspaceId() ? `wss://${streamWorkspaceId()}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference` : '')
+    (streamWorkspaceId() ? `wss://${streamWorkspaceId()}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference` : 'wss://dashscope.aliyuncs.com/api-ws/v1/inference')
   const streamModel = () => cfg.streamModel ?? process.env.S2T_STREAM_MODEL ?? 'paraformer-realtime-v2'
   const streamLanguage = () => cfg.streamLanguage ?? process.env.S2T_STREAM_LANGUAGE ?? ''
   // the "current" backend the helper will actually use
@@ -124,8 +124,8 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
     const helperArgs = [path.join(helperDir, 'main.py'), '--port', String(port), '--token', helperToken]
     if (device) helperArgs.push('--device', device)
     if (asrMode() === 'stream') {
-      if (!streamApiKey() || !streamUrl()) {
-        const message = '流式模式缺少配置：需要 S2T_STREAM_API_KEY，以及 S2T_STREAM_URL 或 S2T_STREAM_WORKSPACE_ID（阿里云百炼控制台获取，详见 README）'
+      if (!streamApiKey()) {
+        const message = '流式模式缺少配置：需要 S2T_STREAM_API_KEY（阿里云百炼控制台获取，详见 README）'
         lastError = message
         broadcast({ type: 'error', message })
         return { ok: false, message }
