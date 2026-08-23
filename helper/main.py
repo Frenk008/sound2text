@@ -35,6 +35,7 @@ FRAME_SEC = 0.032                     # 32 ms VAD frame
 # VAD state machine tuning
 START_PROB = 0.60                     # probability to enter speech
 END_PROB = 0.45                       # probability to stay in speech
+MIN_START_RMS = 0.012                 # energy gate: faint device noise floor must not look like speech
 SILENCE_EXIT_SEC = 0.7                # trailing silence that closes a segment
 MAX_SEGMENT_SEC = 10.0                # force-cut long continuous speech
 MIN_SEGMENT_SEC = 0.35                # discard blips
@@ -129,7 +130,8 @@ class Segmenter:
             del self.buf[: -3]
 
         if not self.in_speech:
-            if p >= START_PROB:
+            frame_rms = float(np.sqrt(np.mean(np.square(frame))))
+            if p >= START_PROB and frame_rms >= MIN_START_RMS:
                 self.in_speech = True
                 self.speech_run = 0.0
                 self.silence_run = 0.0

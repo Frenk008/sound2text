@@ -25,6 +25,8 @@ export const inject = ["webServer"]
 export interface PluginConfig {
   /** Python executable that runs the capture helper. */
   python?: string
+  /** Loopback source speaker name (default: system default output device). */
+  device?: string
   /** ASR API key; S2T_API_KEY wins when both are set. */
   apiKey?: string
   /** OpenAI-compatible base URL. */
@@ -94,8 +96,11 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
     if (!port) return { ok: false, message: 'web server port unknown' }
     helperToken = cfg.devToken ?? process.env.S2T_DEV_TOKEN ?? randomBytes(16).toString('hex')
     const helperDir = path.join(pkgRoot, 'helper')
+    const device = cfg.device ?? process.env.S2T_DEVICE ?? ''
+    const helperArgs = [path.join(helperDir, 'main.py'), '--port', String(port), '--token', helperToken]
+    if (device) helperArgs.push('--device', device)
     try {
-      helper = spawn(python(), [path.join(helperDir, 'main.py'), '--port', String(port), '--token', helperToken], {
+      helper = spawn(python(), helperArgs, {
         cwd: helperDir,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
@@ -253,7 +258,7 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
       kind: 'exact',
       path: `${PREFIX}/status`,
       handler: (_req, res) =>
-        json(res, 200, { running: !!helper, model: model(), baseUrl: baseUrl(), hasKey: !!apiKey(), python: python(), lastError }),
+        json(res, 200, { running: !!helper, model: model(), baseUrl: baseUrl(), hasKey: !!apiKey(), python: python(), device: cfg.device ?? process.env.S2T_DEVICE ?? '(default output)', lastError }),
     }),
   )
 

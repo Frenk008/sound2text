@@ -41,6 +41,7 @@ install.bat
 | `S2T_MODEL` | `FunAudioLLM/SenseVoiceSmall` | 模型 id（硅基流动已验证；OpenAI 用 `whisper-1`） |
 | `S2T_LANGUAGE` | 空 | 语言提示，用 OpenAI whisper-1 时建议 `zh`（SenseVoice 留空） |
 | `S2T_PYTHON` | `python` | Python 解释器路径 |
+| `S2T_DEVICE` | 系统默认输出设备 | 采集哪个输出设备（必须是**声音实际播放的设备**）。`python helper/main.py --list-devices` 查看名称 |
 | `S2T_ARCHIVE_DIR` | `~/.dsh/sound2text/transcripts` | 字幕按天归档目录 |
 
 改代码后：`npm run build`（profile 是 link 安装，产物即时生效）。
