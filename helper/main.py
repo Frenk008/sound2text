@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-HELPER_VERSION = "2026-08-23f"
+HELPER_VERSION = "2026-08-23g"
 
 TARGET_RATE = 16000
 FRAME_SEC = 0.032                     # 32 ms VAD frame
@@ -186,6 +186,89 @@ class Segmenter:
         return np.clip(audio, -1.0, 1.0), start, gain
 
 
+class StreamPump:
+    """Stream-mode bridge: pushes 16k mono frames to the streaming ASR while
+    the VAD gate says speech, and opens/closes metered tasks around utterances
+    so idle silence is never sent (Paraformer bills pushed audio duration)."""
+
+    IDLE_CLOSE_SEC = 15.0   # stop the task after this much silence
+    PREROLL_FRAMES = 10     # ~320 ms kept before speech onset, anti-clipping
+
+    def __init__(self, stream, post=None):
+        self.stream = stream      # stream_asr.ParaformerStream
+        self.post = post          # post(text, start_ms, end_ms, final)
+        self._noise: list[float] = []
+        self.speaking = False
+        self.silence_run = 0.0
+        self.idle_run = 0.0
+        self.preroll: list[np.ndarray] = []
+        self.gain = 1.0
+        self._peak = 0.0
+        stream.on_sentence = self._on_sentence
+
+    def _push(self, frame: np.ndarray) -> None:
+        self.idle_run = 0.0
+        if not self.stream.task_open and not self.stream.start_task():
+            return
+        scaled = np.clip(frame * self.gain, -1.0, 1.0)
+        if scaled.size:
+            self._peak = max(self._peak, float(np.max(np.abs(scaled))))
+        self.stream.feed((scaled * 32767.0).astype("<i2").tobytes())
+
+    def _adapt_gain(self) -> None:
+        """Between utterances: retarget so the next one peaks near 0.5 (loopback
+        captures the POST-volume-mix signal, which can be very quiet)."""
+        if 1e-4 < self._peak < 0.25:
+            self.gain = min(0.5 / self._peak, 16.0)
+        elif self._peak >= 0.25:
+            self.gain = 1.0
+
+    def _on_sentence(self, text: str, begin_ms, end_ms, final: bool) -> None:
+        start = self.stream.wallclock(begin_ms)
+        end = self.stream.wallclock(end_ms) if end_ms is not None else int(time.time() * 1000)
+        log(f"{'final' if final else 'partial'}: {text}")
+        if self.post:
+            self.post(text, start, end, final)
+
+    def handle(self, frame: np.ndarray, p: float) -> None:
+        if not self.speaking:
+            frame_rms = float(np.sqrt(np.mean(np.square(frame))))
+            self.preroll.append(frame)
+            if len(self.preroll) > self.PREROLL_FRAMES:
+                del self.preroll[: -self.PREROLL_FRAMES]
+            self._noise.append(frame_rms)
+            if len(self._noise) > 150:
+                del self._noise[:75]
+            floor = sorted(self._noise)[len(self._noise) // 2] if self._noise else 0.0
+            gate = max(3.0 * floor, 0.004)
+            warmed = len(self._noise) >= 30  # ~1 s of floor data before arming
+            if warmed and p >= START_PROB and frame_rms >= gate:
+                self.speaking = True
+                self.silence_run = 0.0
+                self.idle_run = 0.0
+                self._peak = 0.0
+                for f in self.preroll:
+                    self._push(f)
+                self.preroll = []
+                self._push(frame)
+            else:
+                self.idle_run += FRAME_SEC
+                if self.stream.task_open and self.idle_run >= self.IDLE_CLOSE_SEC:
+                    self.stream.stop_task()
+            return
+
+        self._push(frame)
+        if p >= END_PROB:
+            self.silence_run = 0.0
+        else:
+            self.silence_run += FRAME_SEC
+        if self.silence_run >= SILENCE_EXIT_SEC:
+            self.speaking = False
+            self.silence_run = 0.0
+            self.idle_run = 0.0
+            self._adapt_gain()
+
+
 def wav_bytes(pcm: np.ndarray) -> bytes:
     # segments arrive as float32 in [-1,1]; astype(int16) truncates them to
     # all-zero silence, so scale floats to the int16 range first
@@ -229,6 +312,28 @@ def post_segment(url: str, token: str, start_ms: float, end_ms: float, wav: byte
             log(f"segment POST failed ({attempt + 1}/3): {e}")
             time.sleep(0.8 * (attempt + 1))
     return False
+
+
+def post_stream_text(url: str, token: str, text: str, start_ms: float, end_ms: float, final: bool) -> None:
+    """Fire-and-forget relay of a streaming sentence to the host."""
+    body = json.dumps(
+        {"text": text, "startTs": round(start_ms), "endTs": round(end_ms), "final": bool(final)}
+    ).encode("utf-8")
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={"content-type": "application/json", "x-s2t-token": token},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    return
+                log(f"stream text POST -> HTTP {resp.status}")
+        except Exception as e:  # noqa: BLE001
+            log(f"stream text POST failed ({attempt + 1}/2): {e}")
+            time.sleep(0.3)
 
 
 def pick_loopback(device_name: str | None):
@@ -307,6 +412,13 @@ def main() -> None:
     parser.add_argument("--device", default="", help="loopback source speaker name (default: system default speaker)")
     parser.add_argument("--list-devices", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="no upload; log segments and write wavs to ./debug")
+    parser.add_argument(
+        "--asr-mode",
+        choices=["batch", "stream"],
+        default="batch",
+        help="batch: post whole VAD segments to the host (default). stream: push audio "
+        "to a Paraformer realtime WebSocket and relay partial/final sentences",
+    )
     parser.add_argument("--model-dir", default=str(Path(__file__).parent / "models"))
     args = parser.parse_args()
 
@@ -323,6 +435,32 @@ def main() -> None:
     vad = Vad(model_path)
     seg = Segmenter()
     url = f"http://127.0.0.1:{args.port}/api/sound2text/segment"
+    stream_text_url = f"http://127.0.0.1:{args.port}/api/sound2text/stream/text"
+
+    pump: StreamPump | None = None
+    if args.asr_mode == "stream":
+        from stream_asr import ParaformerStream
+
+        api_key = os.environ.get("S2T_STREAM_API_KEY", "")
+        ws_url = os.environ.get("S2T_STREAM_URL", "")
+        if not ws_url:
+            wsid = os.environ.get("S2T_STREAM_WORKSPACE_ID", "")
+            if wsid:
+                ws_url = f"wss://{wsid}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
+        if not api_key or not ws_url:
+            raise SystemExit(
+                "流式模式缺少配置：需要 S2T_STREAM_API_KEY，以及 S2T_STREAM_URL 或\n"
+                "S2T_STREAM_WORKSPACE_ID（阿里云百炼控制台获取，详见 README）"
+            )
+        model_id = os.environ.get("S2T_STREAM_MODEL", "paraformer-realtime-v2")
+        language = os.environ.get("S2T_STREAM_LANGUAGE", "")
+        ps = ParaformerStream(ws_url, api_key, model=model_id, language=language, log=log)
+        import atexit
+
+        atexit.register(ps.close)  # finish-task + close on Ctrl+C exit
+        post = None if args.dry_run else lambda t, s, e, f: post_stream_text(stream_text_url, args.token, t, s, e, f)
+        pump = StreamPump(ps, post=post)
+        log(f"stream ASR: {model_id} via {ws_url}")
 
     debug_dir = Path(__file__).parent / "debug"
     keep_wav = args.dry_run or os.environ.get("S2T_KEEP_WAV") == "1"
@@ -433,6 +571,9 @@ def main() -> None:
         now_ms = time.time() * 1000
         for i in range(0, len(mono16) - 511, 512):
             frame = mono16[i : i + 512]
+            if pump is not None:
+                pump.handle(frame, vad.prob(frame))
+                continue
             out = seg.feed(frame, vad.prob(frame), now_ms)
             if out is not None:
                 audio, start_ms, gain = out

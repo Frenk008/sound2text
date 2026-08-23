@@ -43,8 +43,37 @@ install.bat
 | `S2T_PYTHON` | `python` | Python 解释器路径 |
 | `S2T_DEVICE` | 系统默认输出设备 | 采集哪个输出设备（必须是**声音实际播放的设备**）。`python helper/main.py --list-devices` 查看名称 |
 | `S2T_ARCHIVE_DIR` | `~/.dsh/sound2text/transcripts` | 字幕按天归档目录 |
+| `S2T_ASR_MODE` | `batch` | `batch`（整段式，默认）或 `stream`（流式，见下节） |
+| `S2T_STREAM_API_KEY` | 无 | 流式模式的阿里云百炼（DashScope）API Key |
+| `S2T_STREAM_WORKSPACE_ID` | 无 | 百炼业务空间 ID，用于拼接 cn-beijing 推理地址 |
+| `S2T_STREAM_URL` | 由 workspace 拼接 | 完整 WebSocket 推理地址（设置后覆盖 workspace） |
+| `S2T_STREAM_MODEL` | `paraformer-realtime-v2` | 流式模型 id |
+| `S2T_STREAM_LANGUAGE` | 空（自动检测） | 流式语言提示（`zh`/`en`/…） |
 
 改代码后：`npm run build`（profile 是 link 安装，产物即时生效）。
+
+## 流式模式（可选）：阿里云百炼 Paraformer 实时识别
+
+默认的 `batch` 模式攒完一整句（停顿 0.7s 或满 3s）才调一次识别 API——免费（硅基流动
+SenseVoiceSmall），但字幕是一句一批。想要接近会议字幕的**逐句实时上屏**体验，可切换
+`stream` 模式：音频通过 WebSocket 持续推给[阿里云百炼 Paraformer 实时语音识别](https://help.aliyun.com/zh/model-studio/real-time-speech-recognition-user-guide)，
+识别中句子在面板上原地刷新，说完即定稿。
+
+```bat
+:: 1. 百炼控制台 https://bailian.console.aliyun.com 开通并创建 API Key
+:: 2. 控制台查看业务空间 ID（Workspace ID）
+setx S2T_ASR_MODE stream
+setx S2T_STREAM_API_KEY sk-你的百炼key
+setx S2T_STREAM_WORKSPACE_ID llm-xxxxxxxx
+:: 新开终端后 dsh web；不想用流式时 setx S2T_ASR_MODE batch 切回（免费）
+```
+
+- **计费**：按实际推送的音频时长计费（约 0.288 元/小时）。本地 VAD 做门控：静音不推流
+  不计费；连续静音 15 秒自动结束识别任务，下次开口自动重开。
+- **依赖**：`pip install websocket-client`（已列入 requirements.txt）。
+- **无 host 自测**：`python helper/main.py --asr-mode stream --dry-run`，终端直接打印
+  partial/final 句子。
+- **协议自测**（无需真实 Key）：`pip install websockets && python helper/test_stream_mock.py`。
 
 ## 使用
 
@@ -62,7 +91,7 @@ install.bat
 ## 常见问题
 
 - **点开始后立即停止 / 提示无法访问音频设备**：dsh 运行在没有音频会话的环境（SSH/服务/某些终端）。在与扬声器同一登录会话的普通终端启动 `dsh web`。
-- **能听到声音但识别一直为空（日志 rms≈0.008 且段总被切到 10s）**：Windows 音量开得低、靠显示器/音箱物理音量放大听声。loopback 捕获的是**系统音量之后**的信号，会轻 10 倍以上。插件已内置安静段自动增益，但最好把系统音量拉到 30% 以上、调低显示器音量补偿，信噪比最佳。
+- **能听到声音但识别一直为空（日志 rms≈0.008 且段总被强切）**：Windows 音量开得低、靠显示器/音箱物理音量放大听声。loopback 捕获的是**系统音量之后**的信号，会轻 10 倍以上。插件已内置安静段自动增益，但最好把系统音量拉到 30% 以上、调低显示器音量补偿，信噪比最佳。
 - **采不到某个播放源**：采集的是「默认输出设备」的回声。`python helper/main.py --list-devices` 查看设备，用 `--device "设备名"` 指定（写进 host spawn 参数需改 host/index.ts）。
 - **想用麦克风而不是系统声音**：helper 里 `include_loopback=True` 改为 False 并选麦克风设备。
 - **识别服务换成别家**：任何 OpenAI 兼容 `/audio/transcriptions` 都可以，改 `S2T_BASE_URL` / `S2T_MODEL` / `S2T_API_KEY` 即可。
@@ -71,7 +100,7 @@ install.bat
 ## 架构说明（对着 DSH 0.1.0-rc.7/8 写的）
 
 - **host 半**（`src/host/index.ts`）：Cordis 插件，`inject: ['webServer']`，在 `ctx.webServer` 注册
-  `/api/sound2text/{events,status,start,stop,segment}` 五个路由；`segment` 由本地 Python 助手带
+  `/api/sound2text/{events,status,start,stop,segment,stream/text}` 六个路由；`segment` 由本地 Python 助手带
   一次性 token 上传（timingSafeEqual 校验）；ASR 失败重试 2 次（429/5xx），4xx 直接报错。
 - **client 半**（`src/client/`）：`dsh.client` 包，esbuild 产出官方 closure-factory 格式
   （`window.__ModuleLoader__.load({id, factory})`），运行时仅依赖平台表内的 react 系。
@@ -80,7 +109,11 @@ install.bat
 - **划选提问**：`ctx.sessions.list.getSnapshot().current` → `ctx.sessions.scope()` →
   `session.prompt([{type:'text',text}], 'queue')`，回答以流式 chunk 回到主聊天区。
 - **VAD**：silero-vad v5 onnx（`onnxruntime` CPU 单线程），512 样本窗 + 64 右上下文，
-  起始阈值 0.60 / 保持 0.45，静音 0.7s 断句、10s 强切、0.35s 以下丢弃。
+  起始阈值 0.60 / 保持 0.45，静音 0.7s 断句、3s 强切、0.35s 以下丢弃。
+- **流式模式**：Python 助手持有到百炼的 WebSocket（dashscope 推理协议：run-task →
+  task-started → 二进制 PCM 帧 → result-generated → finish-task），VAD 只做门控与
+  静音 15s 收任务；句子经 `POST /api/sound2text/stream/text` 中转，host 广播
+  `asr-partial`（面板原地刷新）/`asr-final`（定稿入列 + 归档）。
 
 ## 已知限制
 

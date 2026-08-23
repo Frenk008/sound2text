@@ -3,3 +3,4 @@ soundcard>=0.4.3
 numpy>=1.26
 scipy>=1.11
 onnxruntime>=1.17
+websocket-client>=1.7

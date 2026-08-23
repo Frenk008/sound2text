@@ -39,6 +39,18 @@ export interface PluginConfig {
   archiveDir?: string
   /** Fixed segment-upload token for tests (S2T_DEV_TOKEN env also works). */
   devToken?: string
+  /** 'batch' (default, whole-segment HTTP ASR) or 'stream' (Paraformer realtime WebSocket). */
+  asrMode?: 'batch' | 'stream'
+  /** DashScope API key for stream mode. */
+  streamApiKey?: string
+  /** Full WebSocket inference URL for stream mode (overrides streamWorkspaceId). */
+  streamUrl?: string
+  /** Bailian workspace id; composed into the cn-beijing inference URL. */
+  streamWorkspaceId?: string
+  /** Streaming model id. */
+  streamModel?: string
+  /** Optional language hint for stream mode (zh/en/...). */
+  streamLanguage?: string
 }
 
 const PREFIX = '/api/sound2text'
@@ -62,6 +74,18 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
   const apiKey = () => cfg.apiKey ?? process.env.S2T_API_KEY ?? ''
   const python = () => cfg.python ?? process.env.S2T_PYTHON ?? 'python'
   const archiveDir = () => cfg.archiveDir ?? process.env.S2T_ARCHIVE_DIR ?? path.join(homedir(), '.dsh', 'sound2text', 'transcripts')
+  const asrMode = () => ((cfg.asrMode ?? process.env.S2T_ASR_MODE ?? 'batch').toLowerCase() === 'stream' ? 'stream' : 'batch')
+  const streamApiKey = () => cfg.streamApiKey ?? process.env.S2T_STREAM_API_KEY ?? ''
+  const streamWorkspaceId = () => cfg.streamWorkspaceId ?? process.env.S2T_STREAM_WORKSPACE_ID ?? ''
+  const streamUrl = () =>
+    cfg.streamUrl ??
+    process.env.S2T_STREAM_URL ??
+    (streamWorkspaceId() ? `wss://${streamWorkspaceId()}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference` : '')
+  const streamModel = () => cfg.streamModel ?? process.env.S2T_STREAM_MODEL ?? 'paraformer-realtime-v2'
+  const streamLanguage = () => cfg.streamLanguage ?? process.env.S2T_STREAM_LANGUAGE ?? ''
+  // the "current" backend the helper will actually use
+  const activeModel = () => (asrMode() === 'stream' ? streamModel() : model())
+  const activeHasKey = () => (asrMode() === 'stream' ? !!streamApiKey() : !!apiKey())
 
   // ---- state ----------------------------------------------------------------
   let helper: ChildProcess | undefined
@@ -84,7 +108,7 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
       'cache-control': 'no-cache',
       connection: 'keep-alive',
     })
-    res.write(`data: ${JSON.stringify({ type: 'status', running: !!helper, hasKey: !!apiKey(), model: model(), lastError })}\n\n`)
+    res.write(`data: ${JSON.stringify({ type: 'status', running: !!helper, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), lastError })}\n\n`)
     sseClients.add(res)
     res.on('close', () => sseClients.delete(res))
   }
@@ -99,9 +123,28 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
     const device = cfg.device ?? process.env.S2T_DEVICE ?? ''
     const helperArgs = [path.join(helperDir, 'main.py'), '--port', String(port), '--token', helperToken]
     if (device) helperArgs.push('--device', device)
+    if (asrMode() === 'stream') {
+      if (!streamApiKey() || !streamUrl()) {
+        const message = '流式模式缺少配置：需要 S2T_STREAM_API_KEY，以及 S2T_STREAM_URL 或 S2T_STREAM_WORKSPACE_ID（阿里云百炼控制台获取，详见 README）'
+        lastError = message
+        broadcast({ type: 'error', message })
+        return { ok: false, message }
+      }
+      helperArgs.push('--asr-mode', 'stream')
+    }
+    // config-file values must reach the helper even when the env vars are unset
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    const passThrough: Array<[string, string]> = [
+      ['S2T_STREAM_API_KEY', streamApiKey()],
+      ['S2T_STREAM_URL', streamUrl()],
+      ['S2T_STREAM_MODEL', streamModel()],
+      ['S2T_STREAM_LANGUAGE', streamLanguage()],
+    ]
+    for (const [k, v] of passThrough) if (v) env[k] = v
     try {
       helper = spawn(python(), helperArgs, {
         cwd: helperDir,
+        env,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       })
@@ -119,18 +162,18 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
       log('error', lastError)
       broadcast({ type: 'error', message: lastError })
       helper = undefined
-      broadcast({ type: 'status', running: false, hasKey: !!apiKey(), model: model(), lastError })
+      broadcast({ type: 'status', running: false, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), lastError })
     })
     helper.on('exit', (code) => {
       const wasRunning = !!helper
       helper = undefined
       if (wasRunning) {
         log('info', `helper exited (${code})`)
-        broadcast({ type: 'status', running: false, hasKey: !!apiKey(), model: model(), lastError })
+        broadcast({ type: 'status', running: false, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), lastError })
       }
     })
     log('info', `helper started: ${python()} (port ${port})`)
-    broadcast({ type: 'status', running: true, hasKey: !!apiKey(), model: model(), lastError })
+    broadcast({ type: 'status', running: true, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), lastError })
     return { ok: true, message: 'started' }
   }
 
@@ -143,7 +186,7 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
     } catch {
       /* already gone */
     }
-    broadcast({ type: 'status', running: false, hasKey: !!apiKey(), model: model(), lastError })
+    broadcast({ type: 'status', running: false, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), lastError })
   }
 
   // ---- ASR --------------------------------------------------------------------
@@ -258,7 +301,7 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
       kind: 'exact',
       path: `${PREFIX}/status`,
       handler: (_req, res) =>
-        json(res, 200, { running: !!helper, model: model(), baseUrl: baseUrl(), hasKey: !!apiKey(), python: python(), device: cfg.device ?? process.env.S2T_DEVICE ?? '(default output)', lastError }),
+        json(res, 200, { running: !!helper, mode: asrMode(), model: activeModel(), baseUrl: baseUrl(), hasKey: activeHasKey(), python: python(), device: cfg.device ?? process.env.S2T_DEVICE ?? '(default output)', lastError }),
     }),
   )
 
@@ -314,6 +357,42 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
     }),
   )
 
+  // Streaming sentences from the local Python helper (same token auth).
+  // Partials refresh the panel's in-progress line; finals commit it.
+  disposers.push(
+    ctx.webServer.register({
+      kind: 'exact',
+      path: `${PREFIX}/stream/text`,
+      handler: async (req, res) => {
+        try {
+          const auth = String(req.headers['x-s2t-token'] ?? '')
+          const expect = Buffer.from(helperToken)
+          const got = Buffer.from(auth)
+          if (!helperToken || expect.length !== got.length || !timingSafeEqual(expect, got)) {
+            json(res, 403, { ok: false, message: 'bad token' })
+            return
+          }
+          const body = await readJson(req, 64 * 1024)
+          const text = String(body.text ?? '').trim()
+          if (text) {
+            const startTs = Number(body.startTs ?? 0)
+            const endTs = Number(body.endTs ?? 0)
+            if (body.final) {
+              log('info', `stream sentence: ${text.slice(0, 60)}`)
+              broadcast({ type: 'asr-final', text, startTs, endTs, at: Date.now() })
+              void archive(text)
+            } else {
+              broadcast({ type: 'asr-partial', text, startTs, endTs, at: Date.now() })
+            }
+          }
+          json(res, 200, { ok: true })
+        } catch (e) {
+          json(res, 400, { ok: false, message: e instanceof Error ? e.message : String(e) })
+        }
+      },
+    }),
+  )
+
   heartbeat = setInterval(() => {
     for (const res of sseClients) res.write(': ping\n\n')
   }, 15_000)
@@ -332,5 +411,5 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
     for (const dispose of disposers) dispose()
   })
 
-  log('info', `routes ready under ${PREFIX} (model=${model()}, baseUrl=${baseUrl()}, key=${apiKey() ? 'set' : 'MISSING'})`)
+  log('info', `routes ready under ${PREFIX} (mode=${asrMode()}, model=${activeModel()}, key=${activeHasKey() ? 'set' : 'MISSING'})`)
 }

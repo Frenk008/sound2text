@@ -25,6 +25,7 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
   const [entries, setEntries] = useState<Entry[]>([])
   const [status, setStatus] = useState<StatusEvent>({ running: false, hasKey: false, model: '', lastError: '' })
   const [asrBusy, setAsrBusy] = useState(false)
+  const [partial, setPartial] = useState<{ text: string; at: number } | null>(null)
   const [error, setError] = useState('')
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem('s2t.collapsed') === '1')
   const [width, setWidth] = useState(() => clamp(Number(localStorage.getItem('s2t.width')) || 360, 280, 640))
@@ -59,6 +60,19 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
         case 'asr':
           setAsrBusy(msg.state === 'start')
           break
+        case 'asr-partial':
+          // streaming mode: the in-progress sentence refreshes in place
+          setPartial({ text: String(msg.text ?? ''), at: msg.at ?? Date.now() })
+          setError('')
+          break
+        case 'asr-final':
+          setPartial(null)
+          setEntries((prev) => {
+            const next = prev.concat({ at: msg.at ?? Date.now(), startTs: msg.startTs, endTs: msg.endTs, text: String(msg.text) })
+            return next.length > 500 ? next.slice(next.length - 500) : next
+          })
+          setError('')
+          break
         case 'asr-empty':
           setEntries((prev) => {
             const next = prev.concat({ at: msg.at ?? Date.now(), startTs: 0, endTs: 0, text: '（此段未识别出语音——可能正在播放音乐/非语音内容）', dim: true })
@@ -77,7 +91,7 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
 
   useEffect(() => {
     if (listRef.current && stickBottom.current) listRef.current.scrollTop = listRef.current.scrollHeight
-  }, [entries, asrBusy])
+  }, [entries, asrBusy, partial])
 
   const toggle = useCallback(async () => {
     try {
@@ -175,7 +189,7 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
       <header className="s2t-head">
         <span className={`s2t-dot${status.running ? ' on' : ''}`} />
         <span className="s2t-title">实时字幕</span>
-        {asrBusy && <span className="s2t-busy">识别中…</span>}
+        {(asrBusy || partial) && <span className="s2t-busy">识别中…</span>}
         <span className="s2t-spacer" />
         <button className="s2t-btn primary" onClick={toggle} title={status.model ? `模型：${status.model}` : undefined}>
           {status.running ? '停止' : '开始监听'}
@@ -202,7 +216,7 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
           if (el) stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
         }}
       >
-        {entries.length === 0 && !asrBusy && (
+        {entries.length === 0 && !asrBusy && !partial && (
           <div className="s2t-empty">
             点击「开始监听」，然后播放任意视频、直播或会议音频，字幕会实时出现在这里。
             <br />
@@ -215,6 +229,12 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
             <span className="s2t-text">{e.text}</span>
           </div>
         ))}
+        {partial && (
+          <div className="s2t-item partial">
+            <span className="s2t-time">{fmtTime(partial.at)}</span>
+            <span className="s2t-text">{partial.text}</span>
+          </div>
+        )}
         {asrBusy && <div className="s2t-item pending">…</div>}
       </div>
 
@@ -270,6 +290,7 @@ export const css = `
 .s2t-empty{color:#9aa0a6;line-height:1.8;padding:24px 8px;text-align:center}
 .s2t-item{display:flex;gap:8px;padding:4px 0;line-height:1.65}
 .s2t-item.pending{color:#9aa0a6}
+.s2t-item.partial{color:#c7c9cd;font-style:italic}
 .s2t-item.dim{color:#9aa0a6;font-size:12px}
 .s2t-time{color:#9aa0a6;font-size:11px;font-variant-numeric:tabular-nums;flex:none;padding-top:2px;user-select:none}
 .s2t-text{white-space:pre-wrap;word-break:break-word}
