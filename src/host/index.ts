@@ -187,13 +187,19 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
   }
 
   function handleSegment(wav: Buffer, startTs: number, endTs: number) {
+    const dur = ((endTs - startTs) / 1000).toFixed(1)
+    log('info', `segment received: ${dur}s / ${wav.length} bytes -> ASR`)
     asrChain = asrChain.then(async () => {
       broadcast({ type: 'asr', state: 'start' })
       try {
         const text = await transcribe(wav)
         if (text) {
+          log('info', `ASR ok (${text.length} chars): ${text.slice(0, 60)}`)
           broadcast({ type: 'transcript', text, startTs, endTs, at: Date.now() })
           void archive(text)
+        } else {
+          log('warn', 'ASR returned empty text (no speech in segment?)')
+          broadcast({ type: 'asr-empty', at: Date.now() })
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e)

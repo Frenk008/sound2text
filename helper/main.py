@@ -20,6 +20,7 @@ import base64
 import io
 import json
 import math
+import os
 import sys
 import time
 import urllib.request
@@ -83,6 +84,7 @@ class Vad:
         opts = ort.SessionOptions()
         opts.inter_op_num_threads = 1
         opts.intra_op_num_threads = 1
+        opts.log_severity_level = 3  # errors only: the graph-cleanup warnings are noise
         self.sess = ort.InferenceSession(str(model_path), sess_options=opts, providers=["CPUExecutionProvider"])
         self.reset()
 
@@ -230,7 +232,8 @@ def main() -> None:
     url = f"http://127.0.0.1:{args.port}/api/sound2text/segment"
 
     debug_dir = Path(__file__).parent / "debug"
-    if args.dry_run:
+    keep_wav = args.dry_run or os.environ.get("S2T_KEEP_WAV") == "1"
+    if keep_wav:
         debug_dir.mkdir(exist_ok=True)
 
     from scipy.signal import resample_poly
@@ -285,10 +288,13 @@ def main() -> None:
                     audio, start_ms = out
                     seg_count += 1
                     wav = wav_bytes(audio)
-                    log(f"segment #{seg_count}: {len(audio) / TARGET_RATE:.1f}s")
-                    if args.dry_run:
+                    rms = float(np.sqrt(np.mean(np.square(audio))))
+                    log(f"segment #{seg_count}: {len(audio) / TARGET_RATE:.1f}s rms={rms:.4f}")
+                    if keep_wav:
                         (debug_dir / f"seg_{int(time.time())}_{seg_count}.wav").write_bytes(wav)
-                    elif not post_segment(url, args.token, start_ms, now_ms, wav):
+                    if args.dry_run:
+                        continue
+                    if not post_segment(url, args.token, start_ms, now_ms, wav):
                         log("segment dropped after retries")
 
 

@@ -6,6 +6,7 @@ interface Entry {
   startTs: number
   endTs: number
   text: string
+  dim?: boolean
 }
 
 interface StatusEvent {
@@ -57,6 +58,12 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
           break
         case 'asr':
           setAsrBusy(msg.state === 'start')
+          break
+        case 'asr-empty':
+          setEntries((prev) => {
+            const next = prev.concat({ at: msg.at ?? Date.now(), startTs: 0, endTs: 0, text: '（此段未识别出语音——可能正在播放音乐/非语音内容）', dim: true })
+            return next.length > 500 ? next.slice(next.length - 500) : next
+          })
           break
         case 'error':
           setError(String(msg.message ?? '未知错误'))
@@ -203,7 +210,7 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
           </div>
         )}
         {entries.map((e, i) => (
-          <div className="s2t-item" key={i}>
+          <div className={`s2t-item${e.dim ? ' dim' : ''}`} key={i}>
             <span className="s2t-time">{fmtTime(e.at)}</span>
             <span className="s2t-text">{e.text}</span>
           </div>
@@ -263,6 +270,7 @@ export const css = `
 .s2t-empty{color:#9aa0a6;line-height:1.8;padding:24px 8px;text-align:center}
 .s2t-item{display:flex;gap:8px;padding:4px 0;line-height:1.65}
 .s2t-item.pending{color:#9aa0a6}
+.s2t-item.dim{color:#9aa0a6;font-size:12px}
 .s2t-time{color:#9aa0a6;font-size:11px;font-variant-numeric:tabular-nums;flex:none;padding-top:2px;user-select:none}
 .s2t-text{white-space:pre-wrap;word-break:break-word}
 .s2t-ask{border-top:1px solid rgba(255,255,255,.1);padding:8px 10px;background:rgba(26,115,232,.08);flex:none}
