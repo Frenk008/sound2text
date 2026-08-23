@@ -30,6 +30,8 @@ from pathlib import Path
 
 import numpy as np
 
+HELPER_VERSION = "2026-08-23c"
+
 TARGET_RATE = 16000
 FRAME_SEC = 0.032                     # 32 ms VAD frame
 # VAD state machine tuning
@@ -315,6 +317,7 @@ def main() -> None:
     from scipy.signal import resample_poly
 
     # Prefer pyaudiowpatch (proper WASAPI loopback); fall back to soundcard.
+    log(f"dsh-sound2text helper v{HELPER_VERSION}")
     source = None
     try:
         import pyaudiowpatch  # noqa: F401
@@ -330,6 +333,40 @@ def main() -> None:
         log(f"pyaudiowpatch 启动失败（{e}），改用 soundcard 后端")
     if source is None:
         source = soundcard_source(args.device or None)
+
+    # ---- 5 s capture self-test: prove the loopback actually sees signal ----
+    log("自检中：请现在播放任意有声音频（5 秒）…")
+    test_blocks = []
+    test_samples = 0
+    need = int(5 * 48000)
+    try:
+        for mono, dev_rate in source:
+            test_blocks.append((mono, dev_rate))
+            test_samples += len(mono)
+            if test_samples >= need:
+                break
+    except Exception as e:  # noqa: BLE001
+        raise SystemExit(f"自检期间采集失败: {e}")
+    test_audio = np.concatenate([b for b, _ in test_blocks])
+    test_rms = float(np.sqrt(np.mean(np.square(test_audio))))
+    test_peak = float(np.max(np.abs(test_audio))) if test_audio.size else 0.0
+    if keep_wav:
+        scaled = np.clip(test_audio * (0.5 / test_peak), -1, 1) if 1e-4 < test_peak < 0.25 else test_audio
+        (debug_dir / "selftest.wav").write_bytes(wav_bytes(scaled))
+    if test_rms > 0.002:
+        log(f"✓ 自检通过：捕获到信号 rms={test_rms:.4f} peak={test_peak:.4f}")
+    else:
+        log(
+            f"✗ 自检失败：捕获到纯静音 rms={test_rms:.6f} peak={test_peak:.6f}\n"
+            "  声音没有经过正在采集的输出设备。请依次检查：\n"
+            "  1) 现在是否正在播放音频？音源音量是否为 0？\n"
+            "  2) 任务栏喇叭图标：当前输出设备是否就是采集的设备\n"
+            "     （换设备后需停止/重新开始监听）\n"
+            "  3) python helper/main.py --list-devices 查看设备，用 S2T_DEVICE 指定"
+        )
+    import itertools
+
+    source = itertools.chain(test_blocks, source)
 
     native_buf: list[np.ndarray] = []
     frames_seen = 0
