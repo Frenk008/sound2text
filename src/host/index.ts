@@ -85,7 +85,7 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
     (streamWorkspaceId() ? `wss://${streamWorkspaceId()}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference` : 'wss://dashscope.aliyuncs.com/api-ws/v1/inference')
   const streamModel = () => cfg.streamModel ?? process.env.S2T_STREAM_MODEL ?? 'paraformer-realtime-v2'
   const streamLanguage = () => cfg.streamLanguage ?? process.env.S2T_STREAM_LANGUAGE ?? ''
-  const quickPrompt = () => cfg.quickPrompt ?? process.env.S2T_QUICK_PROMPT ?? '请解读这段内容'
+  const quickPrompt = () => cfg.quickPrompt ?? process.env.S2T_QUICK_PROMPT ?? '回答这个问题'
   // the "current" backend the helper will actually use
   const activeModel = () => (asrMode() === 'stream' ? streamModel() : model())
   const activeHasKey = () => (asrMode() === 'stream' ? !!streamApiKey() : !!apiKey())

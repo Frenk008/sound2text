@@ -17,7 +17,7 @@ interface StatusEvent {
   quickPrompt?: string
 }
 
-const DEFAULT_QUICK_PROMPT = '请解读这段内容'
+const DEFAULT_QUICK_PROMPT = '回答这个问题'
 
 const fmtTime = (ms: number) =>
   new Date(ms).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
