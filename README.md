@@ -43,6 +43,7 @@ install.bat
 | `S2T_PYTHON` | `python` | Python 解释器路径 |
 | `S2T_DEVICE` | 系统默认输出设备 | 采集哪个输出设备（必须是**声音实际播放的设备**）。`python helper/main.py --list-devices` 查看名称 |
 | `S2T_ARCHIVE_DIR` | `~/.dsh/sound2text/transcripts` | 字幕按天归档目录 |
+| `S2T_QUICK_PROMPT` | `请解读这段内容` | 划线后「直接提问」按钮使用的默认提示词 |
 | `S2T_ASR_MODE` | `batch` | `batch`（整段式，默认）或 `stream`（流式，见下节） |
 | `S2T_STREAM_API_KEY` | 无（流式必填） | 阿里云百炼（DashScope）API Key |
 | `S2T_STREAM_WORKSPACE_ID` | 空 | 百炼业务空间 ID；设置后改走空间专属 cn-beijing 地址（一般无需设置） |

@@ -51,6 +51,8 @@ export interface PluginConfig {
   streamModel?: string
   /** Optional language hint for stream mode (zh/en/...). */
   streamLanguage?: string
+  /** Default prompt used by the panel's one-click "直接提问" button. */
+  quickPrompt?: string
 }
 
 const PREFIX = '/api/sound2text'
@@ -83,6 +85,7 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
     (streamWorkspaceId() ? `wss://${streamWorkspaceId()}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference` : 'wss://dashscope.aliyuncs.com/api-ws/v1/inference')
   const streamModel = () => cfg.streamModel ?? process.env.S2T_STREAM_MODEL ?? 'paraformer-realtime-v2'
   const streamLanguage = () => cfg.streamLanguage ?? process.env.S2T_STREAM_LANGUAGE ?? ''
+  const quickPrompt = () => cfg.quickPrompt ?? process.env.S2T_QUICK_PROMPT ?? '请解读这段内容'
   // the "current" backend the helper will actually use
   const activeModel = () => (asrMode() === 'stream' ? streamModel() : model())
   const activeHasKey = () => (asrMode() === 'stream' ? !!streamApiKey() : !!apiKey())
@@ -108,7 +111,7 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
       'cache-control': 'no-cache',
       connection: 'keep-alive',
     })
-    res.write(`data: ${JSON.stringify({ type: 'status', running: !!helper, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), lastError })}\n\n`)
+    res.write(`data: ${JSON.stringify({ type: 'status', running: !!helper, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), quickPrompt: quickPrompt(), lastError })}\n\n`)
     sseClients.add(res)
     res.on('close', () => sseClients.delete(res))
   }
@@ -162,18 +165,18 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
       log('error', lastError)
       broadcast({ type: 'error', message: lastError })
       helper = undefined
-      broadcast({ type: 'status', running: false, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), lastError })
+      broadcast({ type: 'status', running: false, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), quickPrompt: quickPrompt(), lastError })
     })
     helper.on('exit', (code) => {
       const wasRunning = !!helper
       helper = undefined
       if (wasRunning) {
         log('info', `helper exited (${code})`)
-        broadcast({ type: 'status', running: false, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), lastError })
+        broadcast({ type: 'status', running: false, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), quickPrompt: quickPrompt(), lastError })
       }
     })
     log('info', `helper started: ${python()} (port ${port})`)
-    broadcast({ type: 'status', running: true, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), lastError })
+    broadcast({ type: 'status', running: true, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), quickPrompt: quickPrompt(), lastError })
     return { ok: true, message: 'started' }
   }
 
@@ -186,7 +189,7 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
     } catch {
       /* already gone */
     }
-    broadcast({ type: 'status', running: false, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), lastError })
+    broadcast({ type: 'status', running: false, mode: asrMode(), hasKey: activeHasKey(), model: activeModel(), quickPrompt: quickPrompt(), lastError })
   }
 
   // ---- ASR --------------------------------------------------------------------
@@ -301,7 +304,7 @@ export function apply(ctx: Context, rawConfig: PluginConfig = {}) {
       kind: 'exact',
       path: `${PREFIX}/status`,
       handler: (_req, res) =>
-        json(res, 200, { running: !!helper, mode: asrMode(), model: activeModel(), baseUrl: baseUrl(), hasKey: activeHasKey(), python: python(), device: cfg.device ?? process.env.S2T_DEVICE ?? '(default output)', lastError }),
+        json(res, 200, { running: !!helper, mode: asrMode(), model: activeModel(), baseUrl: baseUrl(), hasKey: activeHasKey(), quickPrompt: quickPrompt(), python: python(), device: cfg.device ?? process.env.S2T_DEVICE ?? '(default output)', lastError }),
     }),
   )
 

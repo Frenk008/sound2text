@@ -14,7 +14,10 @@ interface StatusEvent {
   hasKey: boolean
   model: string
   lastError: string
+  quickPrompt?: string
 }
+
+const DEFAULT_QUICK_PROMPT = '请解读这段内容'
 
 const fmtTime = (ms: number) =>
   new Date(ms).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -24,6 +27,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
   const [entries, setEntries] = useState<Entry[]>([])
   const [status, setStatus] = useState<StatusEvent>({ running: false, hasKey: false, model: '', lastError: '' })
+  const [quickPrompt, setQuickPrompt] = useState(DEFAULT_QUICK_PROMPT)
   const [asrBusy, setAsrBusy] = useState(false)
   const [partial, setPartial] = useState<{ text: string; at: number } | null>(null)
   const [error, setError] = useState('')
@@ -49,6 +53,7 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
       switch (msg.type) {
         case 'status':
           setStatus({ running: !!msg.running, hasKey: !!msg.hasKey, model: msg.model ?? '', lastError: msg.lastError ?? '' })
+          setQuickPrompt(msg.quickPrompt || DEFAULT_QUICK_PROMPT)
           break
         case 'transcript':
           setEntries((prev) => {
@@ -121,8 +126,8 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
     }
   }, [])
 
-  const ask = useCallback(async () => {
-    const q = question.trim()
+  const ask = useCallback(async (preset?: string) => {
+    const q = (preset ?? question).trim()
     if (!q || !selection || sending) return
     setSending(true)
     setFeedback('')
@@ -247,6 +252,14 @@ export function Sound2TextPanel({ ctx }: { ctx: ClientContext }) {
             </button>
           </div>
           <div className="s2t-row">
+            <button
+              className="s2t-btn"
+              disabled={sending}
+              onClick={() => void ask(quickPrompt)}
+              title={`一键以默认提示词提问：${quickPrompt}（可用 S2T_QUICK_PROMPT 自定义）`}
+            >
+              直接提问
+            </button>
             <input
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
